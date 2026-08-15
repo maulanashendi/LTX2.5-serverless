@@ -17,6 +17,10 @@
         "value": "worker"
       },
       {
+        "key": "RUNPOD_HUB_VALIDATION",
+        "value": "true"
+      },
+      {
         "key": "LTX25_PRELOAD_VARIANT",
         "value": ""
       },

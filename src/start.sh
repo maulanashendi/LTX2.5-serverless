@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if [ "${RUNPOD_HUB_VALIDATION:-false}" = "true" ]; then
+    echo "worker-comfyui: RunPod Hub validation mode; starting handler without runtime bootstrap"
+    exec python -u /handler.py
+fi
+
 source /bootstrap_workspace.sh
 bootstrap_workspace
 source /bootstrap_ltx25.sh

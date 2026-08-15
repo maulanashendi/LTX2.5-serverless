@@ -28,6 +28,7 @@ jobs:
           bash tests/test_restore_snapshot.sh
           bash tests/test_bootstrap_workspace.sh
           bash tests/test_bootstrap_ltx25.sh
+          bash tests/test_hub_startup.sh
 
       - name: Validate JSON files
         run: |

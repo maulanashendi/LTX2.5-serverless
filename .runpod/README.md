@@ -32,9 +32,10 @@ Use the hub metadata in `.runpod/hub.json` when publishing this template to RunP
 - `HUGGINGFACE_ACCESS_TOKEN`: token with accepted access to the gated LTX 2.5 repository
 - `RUN_MODE`: use `worker` for a serverless endpoint
 
-The Hub's automated repository test performs a credential-free handler health
-check. Model downloads happen only after deployment, where the Hugging Face
-token can be supplied as a RunPod secret or environment variable.
+The Hub's automated repository test starts only the handler and performs a
+credential-free health check. It skips workspace setup, model downloads,
+ComfyUI, and the frontend. Full startup happens after deployment, where the
+Hugging Face token can be supplied as a RunPod secret or environment variable.
 
 ## Usage
 
