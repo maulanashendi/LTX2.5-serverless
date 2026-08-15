@@ -71,6 +71,12 @@ Use the checked-in [`video_ltx2_5_i2v_API.json`](../video_ltx2_5_i2v_API.json) a
 
 The repository test suite validates configuration and workflow transformation without a GPU. It is not a substitute for this smoke test.
 
+RunPod Hub validation uses the credential-free `health_check` handler input and
+disables model preload in `.runpod/tests.json`. The public Hub build therefore
+does not need a Hugging Face token. Real workers still preload the gated model
+stack at startup and require `HF_TOKEN`, `HUGGINGFACE_TOKEN`, or
+`HUGGINGFACE_ACCESS_TOKEN` with accepted LTX 2.5 access.
+
 ## Image and API compatibility
 
 | Target | CUDA | Tag suffix |

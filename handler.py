@@ -524,6 +524,9 @@ async def handler(job: dict) -> dict:
     job_id = job.get('id', uuid.uuid4().hex)
     job_input = job.get('input', {})
     start_time = time.time()
+
+    if job_input.get("health_check") is True:
+        return {"status": "healthy", "service": "ltx-2.5-worker"}
     
     # TELEMETRY: Announce Job Start
     await redis_client.hset(f"job_status:{job_id}", mapping={"status": "initializing", "progress": "0%"})
