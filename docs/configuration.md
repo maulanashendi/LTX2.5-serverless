@@ -78,10 +78,12 @@ The handler and bundled frontend execute `/video_ltx2_5_i2v_API.json`. ComfyUI's
 | `COMFY_INPUT_DIR` | Uploaded workflow input staging directory. | `/comfyui/input` |
 | `COMFY_OUTPUT_DIR` | Generated artifact pickup directory. | `/comfyui/output` |
 | `COMFYUI_MANAGER_CONFIG` | Manager `config.ini` updated during startup. | `/comfyui/user/__manager/config.ini` |
-| `REDIS_URL` | Redis used for dedupe, job status, rate limits, and circuit-breaker state. | `redis://localhost:6379` |
+| `REDIS_URL` | Local Redis only. Leave unset; external servers and URL options are rejected. Accepts `127.0.0.1` or `localhost` on port `6379`, with no path, `/`, or `/0`; always connects to `127.0.0.1`. | `redis://127.0.0.1:6379` |
 | `CACHE_TTL_SECONDS` | Successful response cache lifetime in seconds. | `604800` |
 | `MAX_INLINE_VIDEO_MB` | Maximum inline video response size before S3 becomes mandatory. | `50` |
 | `INDRO_API_KEY` | Authentication for the legacy `prompt` + `image_url` path only. | `dev_token_123` |
+
+Redis stays inside each worker container with disk persistence disabled. Job status, cached results, rate limits, and deduplication are not shared across workers. Pod mode does not use Redis. This restriction does not prevent the pod or host administrator from inspecting local processes, and it does not erase data previously sent to an external Redis server.
 
 ## S3 artifact uploads
 

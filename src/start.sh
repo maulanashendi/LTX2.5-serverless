@@ -19,7 +19,8 @@ start_local_redis() {
     local redis_start_output=""
 
     case "${REDIS_URL}" in
-        redis://localhost*|redis://127.0.0.1*)
+        redis://localhost:6379|redis://localhost:6379/|redis://localhost:6379/0|redis://127.0.0.1:6379|redis://127.0.0.1:6379/|redis://127.0.0.1:6379/0)
+            export REDIS_URL="redis://127.0.0.1:6379"
             if ! command -v redis-cli >/dev/null 2>&1; then
                 echo "worker-comfyui: redis-cli is not installed; cannot verify Redis at ${REDIS_URL}" >&2
                 exit 1
@@ -60,7 +61,8 @@ start_local_redis() {
             exit 1
             ;;
         *)
-            echo "worker-comfyui: Using external Redis at ${REDIS_URL}"
+            echo "worker-comfyui: External Redis is disabled; unset REDIS_URL to use local Redis." >&2
+            exit 1
             ;;
     esac
 }

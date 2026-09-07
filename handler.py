@@ -42,7 +42,13 @@ logger = logging.getLogger("Indro-V5")
 API_KEY_SECRET = os.environ.get("INDRO_API_KEY", "dev_token_123")
 NSFW_BANNED_WORDS = {"child", "children", "kids", "teen", "lolita", "underage"} # Basic proxy for safety
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+REDIS_URL = "redis://127.0.0.1:6379"
+if os.environ.get("REDIS_URL", REDIS_URL) not in {
+    f"redis://{host}:6379{suffix}"
+    for host in ("127.0.0.1", "localhost")
+    for suffix in ("", "/", "/0")
+}:
+    raise RuntimeError("External Redis is disabled; unset REDIS_URL to use local Redis.")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=5, retry_on_timeout=True)
 
 COMFY_NODES = os.environ.get("COMFY_NODES", "127.0.0.1:8188").split(",")
@@ -359,7 +365,7 @@ async def handle_custom_job(job_id: str, job_input: dict, start_time: float) -> 
     priority = job_input.get("priority", "standard")
     is_vip = priority == "vip"
 
-    rate_key = f"rate_limit:{api_key}"
+    rate_key = "rate_limit:legacy"
     req_count = await redis_client.incr(rate_key)
     if req_count == 1:
         await redis_client.expire(rate_key, 60)
