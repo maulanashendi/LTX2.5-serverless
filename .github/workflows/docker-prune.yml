@@ -3,6 +3,8 @@ name: Docker Prune
 on:
   workflow_dispatch:
 
+permissions: {}
+
 jobs:
   prune_images:
     runs-on: [self-hosted, linux]

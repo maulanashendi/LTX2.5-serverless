@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -39,6 +40,10 @@ FRONTEND_DIR = ROOT_DIR / "frontend"
 COMFY_NODES = os.environ.get("COMFY_NODES", "127.0.0.1:8188").split(",")
 COMFY_INPUT_DIR = os.environ.get("COMFY_INPUT_DIR", "/comfyui/input")
 LOCAL_COMFY_NODE = os.environ.get("LOCAL_COMFY_NODE", "127.0.0.1:8188").strip()
+FRONTEND_SUBMIT_URLS = tuple(
+    url.strip() for url in os.environ.get("FRONTEND_SUBMIT_URLS", "").split(",")
+    if url.strip()
+)
 POD_SUBMIT_JOBS: dict[str, dict[str, Any]] = {}
 
 app = FastAPI(title="LTX 2.5 Payload Builder")
@@ -73,10 +78,20 @@ class SubmitRequest(BaseModel):
     @field_validator("endpoint_url")
     @classmethod
     def validate_endpoint_url(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized.startswith(("http://", "https://")):
-            raise ValueError("Endpoint URL must start with http:// or https://")
-        return normalized
+        return get_submit_url(value.strip())
+
+
+def get_submit_url(value: str) -> str:
+    for configured_url in FRONTEND_SUBMIT_URLS:
+        if value == configured_url and configured_url.startswith(("http://", "https://")):
+            return configured_url
+
+    match = re.fullmatch(r"https://api\.runpod\.ai/v2/([A-Za-z0-9_-]+)/(run|runsync)", value)
+    if match:
+        return f"https://api.runpod.ai/v2/{match[1]}/{match[2]}"
+    raise ValueError(
+        "Use a RunPod /run or /runsync URL, or an exact URL configured in FRONTEND_SUBMIT_URLS."
+    )
 
 
 class PodSubmitRequest(BaseModel):
@@ -144,16 +159,18 @@ def cleanup_input_files(filepaths: list[str]) -> None:
     input_root = Path(COMFY_INPUT_DIR).resolve()
 
     for filepath in filepaths:
-        path = Path(filepath)
         try:
+            path = Path(os.path.realpath(filepath))
+            if not str(path).startswith(str(input_root) + os.sep):
+                continue
             if path.exists():
                 path.unlink()
         except OSError:
             continue
 
     for filepath in filepaths:
-        parent = Path(filepath).parent
-        while parent != input_root and parent.exists():
+        parent = Path(os.path.realpath(filepath)).parent
+        while str(parent).startswith(str(input_root) + os.sep) and parent.exists():
             try:
                 parent.rmdir()
             except OSError:
@@ -221,7 +238,9 @@ async def fetch_history_once(
     target_node: str,
     prompt_id: str,
 ) -> dict[str, Any] | None:
-    async with session.get(f"http://{target_node}/history/{prompt_id}") as response:
+    async with session.get(
+        f"http://{target_node}/history/{prompt_id}", allow_redirects=False
+    ) as response:
         history_data = await response.json()
 
     if prompt_id in history_data:
@@ -353,6 +372,7 @@ async def create_payload(request: PayloadRequest) -> dict[str, object]:
 
 @app.post("/api/submit")
 async def submit_payload(request: SubmitRequest) -> dict[str, object]:
+    endpoint_url = get_submit_url(request.endpoint_url)
     headers = {"Content-Type": "application/json"}
     auth_token = request.auth_token.strip()
     if auth_token:
@@ -363,9 +383,10 @@ async def submit_payload(request: SubmitRequest) -> dict[str, object]:
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                request.endpoint_url,
+                endpoint_url,
                 json=request.payload,
                 headers=headers,
+                allow_redirects=False,
             ) as response:
                 raw_body = await response.text()
                 content_type = response.headers.get("Content-Type", "")
@@ -475,11 +496,19 @@ async def get_pod_submit_status(
     prompt_id: str,
     node: str = "",
 ) -> dict[str, object]:
-    node_value = node.strip()
     try:
-        target_node = normalize_node_host(node_value) if node_value else get_pod_submit_node()
+        target_node = get_pod_submit_node()
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        requested_node = normalize_node_host(node) if node.strip() else target_node
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if requested_node != target_node:
+        raise HTTPException(status_code=400, detail="Node must match LOCAL_COMFY_NODE.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", prompt_id):
+        raise HTTPException(status_code=400, detail="Invalid prompt ID.")
 
     timeout = aiohttp.ClientTimeout(total=10)
 

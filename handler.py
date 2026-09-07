@@ -200,18 +200,20 @@ def build_job_image_inputs(
 
 
 def cleanup_input_files(filepaths: list[str]) -> None:
+    input_root = Path(COMFY_INPUT_DIR).resolve()
     for filepath in filepaths:
         try:
-            path = Path(filepath)
+            path = Path(os.path.realpath(filepath))
+            if not str(path).startswith(str(input_root) + os.sep):
+                continue
             if path.exists():
                 path.unlink()
         except OSError:
             logger.warning(f"Failed to clean up input file: {filepath}")
 
     for filepath in filepaths:
-        parent = Path(filepath).parent
-        input_root = Path(COMFY_INPUT_DIR).resolve()
-        while parent != input_root and parent.exists():
+        parent = Path(os.path.realpath(filepath)).parent
+        while str(parent).startswith(str(input_root) + os.sep) and parent.exists():
             try:
                 parent.rmdir()
             except OSError:

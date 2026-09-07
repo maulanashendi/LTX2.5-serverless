@@ -6,6 +6,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -53,12 +56,15 @@ jobs:
 
       - name: Run workflow and payload tests
         run: |
+          python3 -m pip install 'aiohttp>=3.13.0,<4' 'fastapi>=0.116.0,<1' 'httpx>=0.28,<1'
           python3 -m unittest \
             tests.test_handler_health \
             tests.test_ltx_payload_builder \
             tests.test_ltx25_workflow \
             tests.test_verify_comfy_models \
             tests.test_workflow_support \
+            tests.test_frontend_app \
+            tests.test_security_boundaries \
             -v
 
       - name: Validate Docker bake targets

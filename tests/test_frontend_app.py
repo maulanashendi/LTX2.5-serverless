@@ -13,6 +13,7 @@ class FakeResponse:
         self.status = status
         self._json_data = json_data
         self._text_data = text_data
+        self.headers = {"Content-Type": "application/json"}
 
     async def __aenter__(self):
         return self
@@ -37,6 +38,7 @@ class FakeClientSession:
     def __init__(self, *, post_response=None, get_response=None, **kwargs):
         self._post_response = post_response
         self._get_response = get_response
+        self.requests = []
 
     async def __aenter__(self):
         return self
@@ -44,10 +46,12 @@ class FakeClientSession:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    def post(self, url, json):
+    def post(self, url, json, **kwargs):
+        self.requests.append((url, kwargs))
         return self._post_response
 
-    def get(self, url):
+    def get(self, url, **kwargs):
+        self.requests.append((url, kwargs))
         return self._get_response
 
 
