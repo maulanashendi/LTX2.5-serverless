@@ -53,7 +53,9 @@ HUGGINGFACE_ACCESS_TOKEN=hf_xxx
 
 5. Create an endpoint from the template and wait for the first worker to finish downloading the model stack.
 
-The first cold start is the expensive one. Later workers reuse the models and caches from the attached volume.
+The first cold start is the expensive one. Later workers reuse the models and download/compiler caches from the attached volume.
+
+Redis needs no separate service or account. Leave `REDIS_URL` unset: each worker starts its own local Redis for job tracking, result caching, and duplicate-job prevention. External Redis connections are disabled, and Redis state is neither shared across workers nor saved across container replacement. Interactive pod mode does not use Redis. See [Redis and cached results](docs/configuration.md#redis-and-cached-results).
 
 ### Run a worker job
 
@@ -110,6 +112,10 @@ The editor workflow is installed in the ComfyUI user workflow library. The API w
 
 Models download automatically on the first deployment. Startup then verifies that ComfyUI can actually see the transformer, text encoders, VAEs, and latent upscaler—not merely that files exist somewhere on disk looking decorative.
 
+### Bundled Frontend
+
+![Bundled Frontend](docs/assets/bundled-frontend.png)
+
 ## Persistent storage
 
 `/workspace` is the home of everything worth keeping:
@@ -134,6 +140,8 @@ docker buildx bake ltx2-5-distilled-int8 \
 ```
 
 All release targets build for `linux/amd64`. CUDA 13 is the primary Blackwell-first path; CUDA 12.8 is available as a fallback target.
+
+Code changes take effect only after rebuilding the image and replacing the running containers. If upgrading from external Redis, follow the [Redis migration steps](docs/deployment.md#upgrading-from-external-redis).
 
 | Target | Purpose |
 | --- | --- |

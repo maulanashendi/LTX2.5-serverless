@@ -45,6 +45,8 @@ HUGGINGFACE_ACCESS_TOKEN=hf_xxx
 
 Accept the [LTX 2.5 license](https://huggingface.co/Lightricks/LTX-2.5) before booting the template.
 
+Leave `REDIS_URL` unset. Each worker starts Redis locally; external Redis services are unsupported. Job tracking and result caching are local to each worker, even when workers share a model volume. See [Redis and cached results](configuration.md#redis-and-cached-results).
+
 ## 3. Create the endpoint
 
 Create a queue-based Serverless endpoint from the template:
@@ -60,7 +62,7 @@ RunPod mounts Serverless volumes at `/runpod-volume`; this worker aliases that p
 
 ## 4. Smoke test
 
-Use the checked-in [`video_ltx2_5_i2v_API.json`](../video_ltx2_5_i2v_API.json) and the request shape in the [README](../README.md#api-contract). Verify:
+Use the checked-in [`video_ltx2_5_i2v_API.json`](../video_ltx2_5_i2v_API.json) and the request shape in the [README](../README.md#run-a-worker-job). Verify:
 
 1. Bootstrap reports the persisted LTX stack as ready.
 2. ComfyUI starts without missing-node or missing-model errors.
@@ -78,6 +80,19 @@ build does not need a Hugging Face token or wait for the full runtime. Real
 workers do not set this flag; they preload the gated model stack at startup and
 require `HF_TOKEN`, `HUGGINGFACE_TOKEN`, or `HUGGINGFACE_ACCESS_TOKEN` with
 accepted LTX 2.5 access.
+
+## Upgrading from external Redis
+
+The local Redis restriction is included in source commit `ed6617d`. A Git push alone does not update an existing image or running worker.
+
+1. Build and publish an image containing that commit or a later revision, using a new version tag and the `linux/amd64` build target above.
+2. Remove the external `REDIS_URL` setting from the RunPod template or container environment. Leaving it configured causes startup to fail with `External Redis is disabled; unset REDIS_URL to use local Redis.`
+3. Update the deployment to the new image and replace the existing workers or containers. Merely restarting an old image will keep the old behavior.
+4. For `worker` or `local-api`, confirm that startup reports Redis ready or already available at `redis://127.0.0.1:6379`, then complete the generation smoke test above. Pod mode reports that it skips Redis.
+
+Old Redis data is not migrated or deleted. If an earlier deployment used external Redis, remove its cached results separately. If you used the legacy `input.api_key` route, rotate `INDRO_API_KEY` and update its callers: older versions included that secret in Redis counter names. The new worker uses a counter name without key material.
+
+Expect an empty result cache after replacement. Models and download/compiler caches remain on the attached volume. This update restricts Redis connections; it does not add authentication to the frontend or change S3 uploads.
 
 ## Image and API compatibility
 

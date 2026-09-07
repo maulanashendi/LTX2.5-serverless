@@ -83,7 +83,19 @@ The handler and bundled frontend execute `/video_ltx2_5_i2v_API.json`. ComfyUI's
 | `MAX_INLINE_VIDEO_MB` | Maximum inline video response size before S3 becomes mandatory. | `50` |
 | `INDRO_API_KEY` | Authentication for the legacy `prompt` + `image_url` path only. | `dev_token_123` |
 
-Redis stays inside each worker container with disk persistence disabled. Job status, cached results, rate limits, and deduplication are not shared across workers. Pod mode does not use Redis. This restriction does not prevent the pod or host administrator from inspecting local processes, and it does not erase data previously sent to an external Redis server.
+## Redis and cached results
+
+Redis is the worker's temporary job notebook. In `worker` and `local-api` modes, startup launches it inside the container on `127.0.0.1:6379`, with protected mode enabled and disk persistence disabled. Leave `REDIS_URL` unset; no external Redis service is needed. External addresses, credentials, query options, alternate ports, and nonzero databases are rejected without printing the supplied URL. Direct handler startup, including Hub validation, also enforces the local address. `pod` mode skips Redis entirely.
+
+The worker stores the following in Redis:
+
+- Job status and progress, duplicate-job locks, and temporarily unavailable ComfyUI nodes.
+- Completed responses for `CACHE_TTL_SECONDS` (seven days by default). These contain the actual base64-encoded artifacts when S3 is disabled, or download links when S3 is enabled.
+- A request counter for the legacy API. Authentication happens before counting, and the counter name contains no API key.
+
+This state belongs to one worker: caching, deduplication, and rate limits are not coordinated across workers. Restarting the bundled Redis process or replacing its container loses that state. This does not delete generated files, S3 objects, or the model and compiler caches on persistent storage.
+
+The local connection restriction prevents the worker from sending this state to an external Redis provider. Pod and host administrators can still inspect local processes. Data sent to an external Redis server by an older image remains there until separately removed; see [upgrading from external Redis](deployment.md#upgrading-from-external-redis).
 
 ## S3 artifact uploads
 

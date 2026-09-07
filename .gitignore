@@ -41,4 +41,5 @@ Thumbs.db
 *.pid
 
 # Local planning docs
+docs/planning/
 docs/planning/004_refactor_plan.local.md
