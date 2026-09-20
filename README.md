@@ -59,6 +59,52 @@ Redis needs no separate service or account. Leave `REDIS_URL` unset: each worker
 
 ### Run a worker job
 
+There are two accepted input shapes: a flat request (simplest, recommended) and a raw workflow request (advanced, used by the bundled frontend).
+
+#### Flat input (recommended)
+
+Submit a `prompt` and, optionally, an `image`. Image-to-video vs. text-to-video is chosen automatically from whether `image` is present — no separate flag needed:
+
+```json
+{
+  "input": {
+    "prompt": "A lone warrior walking across a vast desert at dusk.",
+    "duration": 5,
+    "aspect_ratio": "16:9",
+    "optimize_prompt": true
+  }
+}
+```
+
+To generate image-to-video, add `image` (a data URL or raw base64 payload):
+
+```json
+{
+  "input": {
+    "prompt": "The subject turns and walks toward the camera.",
+    "image": "data:image/png;base64,...",
+    "image_name": "source.png",
+    "duration": 5,
+    "aspect_ratio": "16:9"
+  }
+}
+```
+
+Flat input fields:
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `prompt` | string | required | Non-blank. |
+| `image` | string | omitted | Data URL or raw base64. Presence selects image-to-video; absence selects text-to-video. An `http(s)` URL is also accepted, but only when `LTX_ALLOW_REMOTE_IMAGE=true`. |
+| `image_name` | string | `source-image.png` | Used for the materialized input filename. |
+| `duration` | int (seconds) | `5` | 1–20 seconds. |
+| `aspect_ratio` | `"16:9"` \| `"9:16"` \| `"1:1"` | `"16:9"` | |
+| `optimize_prompt` | bool | `true` | Toggles the built-in prompt enhancer node. |
+| `seed` | int | random | Same seed + same inputs produce the same graph. |
+| `mode` | `"i2v"` \| `"t2v"` | inferred | Optional assertion only — if given and it disagrees with what `image`'s presence implies, the job fails instead of silently overriding your input. |
+
+#### Raw workflow input (advanced)
+
 Submit one of the checked-in LTX 2.5 API workflows — [image-to-video](./video_ltx2_5_i2v_API.json) or [text-to-video](./video_ltx2_5_t2v_API.json) — through RunPod `/run` or `/runsync`:
 
 ```json
@@ -75,7 +121,11 @@ Submit one of the checked-in LTX 2.5 API workflows — [image-to-video](./video_
 }
 ```
 
-`workflow` must contain a ComfyUI API-format workflow; the empty object above only shows the request structure. Text-to-video jobs carry no source frame, so they omit `images` entirely. Results are returned in `output.images[]` and/or `output.videos[]`. S3 output is supported when configured; otherwise artifacts are returned inline.
+`workflow` must contain a ComfyUI API-format workflow; the empty object above only shows the request structure. Text-to-video jobs carry no source frame, so they omit `images` entirely. If a job includes both `workflow` and a flat `prompt`, `workflow` takes priority and the flat fields are ignored.
+
+#### Response shape
+
+Both input shapes return the same envelope. Results are returned in `output.images[]` and/or `output.videos[]`. S3 output is supported when configured; otherwise artifacts are returned inline.
 
 ## Option 2: Run as an interactive pod
 

@@ -33,7 +33,7 @@ Recommended serverless values:
 ```env
 PERSIST_WORKSPACE=true
 RUN_MODE=worker
-COMFY_NODES=127.0.0.1:8188
+COMFY_HOST=127.0.0.1:8188
 LTX25_PRELOAD_VARIANT=distilled-int8
 LTX25_PRELOAD_PROMPT_ENHANCER=true
 HUGGINGFACE_ACCESS_TOKEN=hf_xxx
@@ -73,7 +73,9 @@ The handler and bundled frontend execute `/video_ltx2_5_i2v_API.json` and `/vide
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `COMFY_NODES` | Comma-separated ComfyUI API hosts used by the handler. | `127.0.0.1:8188` |
+| `COMFY_HOST` | ComfyUI API host used by the handler. | `127.0.0.1:8188` |
+| `COMFY_READY_TIMEOUT` | Seconds the handler waits for ComfyUI to answer `/system_stats` before the first job renders. | `600` |
+| `COMFY_NODES` | ComfyUI API hosts used by the bundled frontend only; the handler no longer reads it. | `127.0.0.1:8188` |
 | `LOCAL_COMFY_NODE` | ComfyUI host used by the bundled frontend. | `127.0.0.1:8188` |
 | `COMFY_INPUT_DIR` | Uploaded workflow input staging directory. | `/comfyui/input` |
 | `COMFY_OUTPUT_DIR` | Generated artifact pickup directory. | `/comfyui/output` |
@@ -81,7 +83,7 @@ The handler and bundled frontend execute `/video_ltx2_5_i2v_API.json` and `/vide
 | `REDIS_URL` | Local Redis only. Leave unset; external servers and URL options are rejected. Accepts `127.0.0.1` or `localhost` on port `6379`, with no path, `/`, or `/0`; always connects to `127.0.0.1`. | `redis://127.0.0.1:6379` |
 | `CACHE_TTL_SECONDS` | Successful response cache lifetime in seconds. | `604800` |
 | `MAX_INLINE_VIDEO_MB` | Maximum inline video response size before S3 becomes mandatory. | `50` |
-| `INDRO_API_KEY` | Authentication for the legacy `prompt` + `image_url` path only. | `dev_token_123` |
+| `LTX_ALLOW_REMOTE_IMAGE` | Set to `true` to let the flat input path download an `image` given as an `http(s)` URL. Data URLs and raw base64 always work. | unset |
 
 ## Redis and cached results
 

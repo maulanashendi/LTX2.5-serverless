@@ -1,30 +1,33 @@
 # ==============================================================================
-# 🚀 INDRO STUDIO CLOUD - V5 GOD-TIER ENGINE
-# Architect: Indro Core Engineering Team
-# Features: 
-#   - Distributed Circuit Breakers & Seamless Node Failover
-#   - UUID-Safe Mutex Locks (Zero Deadlock)
-#   - VIP Rate Limiting & Priority Queue Routing
-#   - Real-Time Telemetry State Injection (for Frontend Progress Bars)
-#   - Auto-Prompt Cinematic Enhancement & NSFW Filtering
+# LTX 2.5 RunPod serverless handler
+#
+# Dispatches jobs to one of two paths:
+#   - "workflow": a raw ComfyUI API-format graph supplied by the caller
+#   - flat: {"prompt", "image"?, ...} — the graph is built from ltx_graph
+# Exceptions propagate out of handler() so the RunPod SDK marks the job FAILED
+# instead of masking failures behind {"status": "error"}.
 # ==============================================================================
 
-import runpod
+from __future__ import annotations
+
+import asyncio
 import base64
 import json
+import logging
 import os
-import random
 import time
 import uuid
-import logging
-import hashlib
-import asyncio
+from pathlib import Path
+from typing import Any
+
 import aiohttp
 import boto3
-from pathlib import Path
+import runpod
 from botocore.config import Config
 import redis.asyncio as redis
 
+import comfy_client
+from ltx_graph import DEFAULT_IMAGE_NAME, build_graph
 from workflow_support import (
     apply_input_filename_map,
     build_output_path,
@@ -32,15 +35,15 @@ from workflow_support import (
     collect_output_entries,
     guess_media_type,
     is_workflow_job,
+    materialize_image,
     write_input_images,
 )
 
-# --- 1. ENTERPRISE OBSERVABILITY & SECURITY ---
-logging.basicConfig(level=logging.INFO, format='{"time":"%(asctime)s", "level":"%(levelname)s", "message":"%(message)s"}')
-logger = logging.getLogger("Indro-V5")
-
-API_KEY_SECRET = os.environ.get("INDRO_API_KEY", "dev_token_123")
-NSFW_BANNED_WORDS = {"child", "children", "kids", "teen", "lolita", "underage"} # Basic proxy for safety
+logging.basicConfig(
+    level=logging.INFO,
+    format='{"time":"%(asctime)s", "level":"%(levelname)s", "message":"%(message)s"}',
+)
+logger = logging.getLogger("ltx25-worker")
 
 REDIS_URL = "redis://127.0.0.1:6379"
 if os.environ.get("REDIS_URL", REDIS_URL) not in {
@@ -49,110 +52,32 @@ if os.environ.get("REDIS_URL", REDIS_URL) not in {
     for suffix in ("", "/", "/0")
 }:
     raise RuntimeError("External Redis is disabled; unset REDIS_URL to use local Redis.")
-redis_client = redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=5, retry_on_timeout=True)
+redis_client = redis.from_url(
+    REDIS_URL, decode_responses=True, socket_connect_timeout=5, retry_on_timeout=True
+)
 
-COMFY_NODES = os.environ.get("COMFY_NODES", "127.0.0.1:8188").split(",")
+COMFY_HOST = os.environ.get("COMFY_HOST", "127.0.0.1:8188")
+COMFY_READY_TIMEOUT = int(os.environ.get("COMFY_READY_TIMEOUT", "600"))
 COMFY_INPUT_DIR = os.environ.get("COMFY_INPUT_DIR", "/comfyui/input")
 COMFY_OUTPUT_DIR = os.environ.get("COMFY_OUTPUT_DIR", "/comfyui/output")
 MAX_INLINE_VIDEO_MB = int(os.environ.get("MAX_INLINE_VIDEO_MB", "50"))
 CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "604800"))
 
-try:
-    with open('video_ltx2_5_i2v_API.json', 'r') as f:
-        BASE_WORKFLOW = json.load(f)
-except:
-    raise RuntimeError("Worker cannot start without workflow JSON.")
-
-try:
-    with open('video_ltx2_5_t2v_API.json', 'r') as f:
-        T2V_BASE_WORKFLOW = json.load(f)
-except:
-    raise RuntimeError("Worker cannot start without workflow JSON.")
-
-NODE_MAP = {
-    "image": "395",
-    "prompt": "398:376",
-    "seed1": "398:338",
-    "seed2": "398:339",
-    "output": "75",
-}
-
-# --- 2. ADVANCED AI LOGIC ---
-class AIEngine:
-    @staticmethod
-    def enhance_prompt(prompt: str) -> str:
-        """Auto-injects cinematic modifiers if the user provides a lazy prompt."""
-        if len(prompt.split()) < 5:
-            return f"{prompt}, cinematic lighting, highly detailed, 8k resolution, unreal engine 5 render, photorealistic, masterpiece"
-        return prompt
-
-    @staticmethod
-    def safety_check(prompt: str) -> bool:
-        prompt_lower = prompt.lower()
-        return not any(word in prompt_lower for word in NSFW_BANNED_WORDS)
-
-# --- 3. THE DISTRIBUTED CIRCUIT BREAKER (My Custom Addition) ---
-class GPUFleetManager:
-    @staticmethod
-    async def get_best_node(session: aiohttp.ClientSession, is_vip: bool) -> str:
-        """Finds the least busy GPU. Skips 'DEAD' nodes using the Circuit Breaker."""
-        best_node = None
-        min_queue = 999
-        max_q_limit = 15 if is_vip else 5 # VIP users bypass standard queue caps
-        
-        for node in COMFY_NODES:
-            # CIRCUIT BREAKER: Check if node is flagged as dead in Redis
-            if await redis_client.get(f"circuit_breaker:{node}"):
-                continue 
-
-            try:
-                async with session.get(f"http://{node}/queue", timeout=1.5) as resp:
-                    data = await resp.json()
-                    q_size = len(data.get("queue_running", [])) + len(data.get("queue_pending", []))
-                    if q_size < min_queue:
-                        min_queue = q_size
-                        best_node = node
-            except Exception:
-                # Flag node as DEAD for 60 seconds if it fails to respond
-                await redis_client.setex(f"circuit_breaker:{node}", 60, "DEAD")
-                logger.warning(f"CIRCUIT BREAKER TRIPPED: {node} flagged as offline.")
-                
-        if not best_node or min_queue >= max_q_limit:
-            raise RuntimeError("FLEET OVERLOAD: All GPUs are busy or offline.")
-        return best_node
-
-# --- 4. CLOUD NATIVE STORAGE ---
-async def upload_to_s3_with_retry(
-    filepath: str, storage_key: str, content_type: str | None = None
-) -> str:
-    bucket = os.environ.get("AWS_BUCKET_NAME")
-    if not bucket:
-        raise RuntimeError("AWS_BUCKET_NAME missing.")
-    
-    boto_config = Config(retries={'max_attempts': 3, 'mode': 'standard'})
-    def _upload():
-        s3 = boto3.client('s3', config=boto_config)
-        extra_args = {'ContentType': content_type} if content_type else None
-        if extra_args:
-            s3.upload_file(filepath, bucket, storage_key, ExtraArgs=extra_args)
-        else:
-            s3.upload_file(filepath, bucket, storage_key)
-        return s3.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': bucket, 'Key': storage_key},
-            ExpiresIn=604800,
-        )
-    
-    for attempt in range(3):
-        try:
-            return await asyncio.to_thread(_upload)
-        except Exception as e:
-            if attempt == 2:
-                raise e
-            await asyncio.sleep(2 ** attempt)
+_comfy_ready = False
 
 
-def decode_cached_response(raw_value: str) -> dict | None:
+async def redis_safe(coro: Any, default: Any = None) -> Any:
+    """Await a Redis coroutine, degrading to `default` on any Redis failure."""
+    try:
+        return await coro
+    except Exception as exc:  # noqa: BLE001 - Redis is best-effort everywhere it's used
+        logger.warning(f"Redis operation failed, continuing without it: {exc}")
+        return default
+
+
+def decode_cached_response(raw_value: str | None) -> dict | None:
+    if raw_value is None:
+        return None
     try:
         cached_response = json.loads(raw_value)
     except (TypeError, json.JSONDecodeError):
@@ -166,25 +91,22 @@ def decode_cached_response(raw_value: str) -> dict | None:
     return response
 
 
-async def build_result_payload(filepath: str, job_id: str) -> dict:
-    if os.environ.get("AWS_BUCKET_NAME"):
-        return {
-            "video_url": await upload_to_s3_with_retry(
-                filepath,
-                f"renders/{job_id}.mp4",
-                "video/mp4",
-            )
-        }
+async def _release_lock(cache_hash: str, lock_token: str) -> None:
+    current = await redis_client.get(cache_hash)
+    if current == lock_token:
+        await redis_client.delete(cache_hash)
 
-    file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
-    if file_size_mb > MAX_INLINE_VIDEO_MB:
-        raise RuntimeError(
-            f"Video output is {file_size_mb:.1f}MB, which exceeds MAX_INLINE_VIDEO_MB={MAX_INLINE_VIDEO_MB}. "
-            "Configure S3 upload or raise the inline limit."
-        )
 
-    with open(filepath, "rb") as video_file:
-        return {"video_base64": base64.b64encode(video_file.read()).decode("utf-8")}
+def success_envelope(output: dict, start_time: float, **extra: Any) -> dict:
+    return {
+        "status": "success",
+        "output": output,
+        "metadata": {
+            "render_time_sec": round(time.time() - start_time, 2),
+            "node_used": COMFY_HOST,
+            **extra,
+        },
+    }
 
 
 def build_job_image_inputs(
@@ -233,6 +155,37 @@ def cleanup_input_files(filepaths: list[str]) -> None:
             parent = parent.parent
 
 
+async def upload_to_s3_with_retry(
+    filepath: str, storage_key: str, content_type: str | None = None
+) -> str:
+    bucket = os.environ.get("AWS_BUCKET_NAME")
+    if not bucket:
+        raise RuntimeError("AWS_BUCKET_NAME missing.")
+
+    boto_config = Config(retries={"max_attempts": 3, "mode": "standard"})
+
+    def _upload():
+        s3 = boto3.client("s3", config=boto_config)
+        extra_args = {"ContentType": content_type} if content_type else None
+        if extra_args:
+            s3.upload_file(filepath, bucket, storage_key, ExtraArgs=extra_args)
+        else:
+            s3.upload_file(filepath, bucket, storage_key)
+        return s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": storage_key},
+            ExpiresIn=604800,
+        )
+
+    for attempt in range(3):
+        try:
+            return await asyncio.to_thread(_upload)
+        except Exception as e:
+            if attempt == 2:
+                raise e
+            await asyncio.sleep(2**attempt)
+
+
 async def build_output_entry(
     filepath: str,
     job_id: str,
@@ -246,7 +199,8 @@ async def build_output_entry(
         file_size_mb = path.stat().st_size / (1024 * 1024)
         if file_size_mb > MAX_INLINE_VIDEO_MB and not os.environ.get("AWS_BUCKET_NAME"):
             raise RuntimeError(
-                f"Video output is {file_size_mb:.1f}MB, which exceeds MAX_INLINE_VIDEO_MB={MAX_INLINE_VIDEO_MB}. "
+                f"Video output is {file_size_mb:.1f}MB, which exceeds "
+                f"MAX_INLINE_VIDEO_MB={MAX_INLINE_VIDEO_MB}. "
                 "Configure S3 upload or raise the inline limit."
             )
 
@@ -271,7 +225,7 @@ async def build_output_entry(
 async def build_workflow_output_payload(history_entry: dict, job_id: str) -> dict:
     entries = collect_output_entries(history_entry.get("outputs", {}))
     if not entries:
-        raise RuntimeError("Workflow completed without supported outputs.")
+        raise RuntimeError("LTX_NO_OUTPUT: workflow finished without image or video output.")
 
     output: dict[str, list[dict]] = {"images": [], "videos": []}
     for index, entry in enumerate(entries):
@@ -286,187 +240,24 @@ async def build_workflow_output_payload(history_entry: dict, job_id: str) -> dic
     return {key: value for key, value in output.items() if value}
 
 
-def extract_custom_video_filename(history_entry: dict) -> str | None:
-    node_output = history_entry.get('outputs', {}).get(NODE_MAP["output"], {})
-    for key in ["videos", "gifs"]:
-        if key in node_output and node_output[key]:
-            return node_output[key][0]['filename']
-    return None
-
-
-async def wait_for_workflow_completion(
+async def wait_for_comfy_ready(
     session: aiohttp.ClientSession,
-    target_node: str,
-    prompt_id: str,
-    start_time: float,
+    timeout_s: float = COMFY_READY_TIMEOUT,
+    interval_s: float = 1.0,
+) -> None:
+    global _comfy_ready
+    if _comfy_ready:
+        return
+    await comfy_client.check_server(session, COMFY_HOST, timeout_s=timeout_s, interval_s=interval_s)
+    _comfy_ready = True
+
+
+async def execute_workflow(
+    session: aiohttp.ClientSession, workflow: dict, job_id: str, start_time: float
 ) -> dict:
-    fail_count = 0
-    while True:
-        elapsed = time.time() - start_time
-        if elapsed > 900:
-            raise TimeoutError("Render timeout.")
-
-        try:
-            async with session.get(f"http://{target_node}/history/{prompt_id}") as resp:
-                history_data = await resp.json()
-        except Exception:
-            fail_count += 1
-            if fail_count > 5:
-                raise RuntimeError(f"Node {target_node} disconnected.")
-            await asyncio.sleep(2)
-            continue
-
-        if prompt_id in history_data:
-            return history_data[prompt_id]
-
-        await asyncio.sleep(min(2 + elapsed / 30, 5))
-
-
-async def execute_workflow_with_failover(
-    session: aiohttp.ClientSession,
-    workflow: dict,
-    job_id: str,
-    is_vip: bool,
-    start_time: float,
-) -> tuple[str, dict]:
-    for failover_attempt in range(2):
-        target_node = None
-        try:
-            target_node = await GPUFleetManager.get_best_node(session, is_vip)
-            await redis_client.hset(
-                f"job_status:{job_id}",
-                mapping={"status": "rendering", "node": target_node},
-            )
-            logger.info(f"[{job_id}] Routed to Node: {target_node}")
-
-            async with session.post(
-                f"http://{target_node}/prompt", json={"prompt": workflow}
-            ) as resp:
-                prompt_response = await resp.json()
-                prompt_id = prompt_response["prompt_id"]
-
-            history_entry = await wait_for_workflow_completion(
-                session,
-                target_node,
-                prompt_id,
-                start_time,
-            )
-            return target_node, history_entry
-        except Exception as e:
-            logger.warning(f"[{job_id}] GPU {target_node} failed. ({str(e)})")
-            if target_node:
-                await redis_client.setex(f"circuit_breaker:{target_node}", 60, "DEAD")
-            if failover_attempt == 1:
-                raise RuntimeError("All failover attempts exhausted.")
-            logger.info(f"[{job_id}] Initiating Seamless Failover to new GPU...")
-
-    raise RuntimeError("All failover attempts exhausted.")
-
-
-async def handle_custom_job(job_id: str, job_input: dict, start_time: float) -> dict:
-    api_key = job_input.get("api_key")
-    if api_key != API_KEY_SECRET:
-        raise PermissionError("401 Unauthorized")
-
-    priority = job_input.get("priority", "standard")
-    is_vip = priority == "vip"
-
-    rate_key = "rate_limit:legacy"
-    req_count = await redis_client.incr(rate_key)
-    if req_count == 1:
-        await redis_client.expire(rate_key, 60)
-    limit = 50 if is_vip else 10
-    if req_count > limit:
-        raise PermissionError("429 Too Many Requests. Rate Limit Exceeded.")
-
-    raw_prompt = job_input.get("prompt", "")
-    image_url = job_input.get("image_url", "")
-
-    mode = job_input.get("mode", "i2v")
-    if mode not in ("i2v", "t2v"):
-        raise ValueError(f"Unsupported mode: {mode}.")
-
-    if mode == "i2v":
-        if not image_url or not raw_prompt:
-            raise ValueError("Missing 'image_url' or 'prompt'.")
-    else:
-        if not raw_prompt:
-            raise ValueError("Missing 'prompt'.")
-
-    if not AIEngine.safety_check(raw_prompt):
-        raise ValueError("Prompt violates safety protocols.")
-
-    enhanced_prompt = AIEngine.enhance_prompt(raw_prompt)
-    cache_hash = hashlib.sha256(f"{mode}_{image_url}_{enhanced_prompt}".encode()).hexdigest()
-    lock_token = str(uuid.uuid4())
-
-    redis_state = await redis_client.get(cache_hash)
-    cached_response = decode_cached_response(redis_state)
-    if cached_response:
-        await redis_client.hset(
-            f"job_status:{job_id}",
-            mapping={"status": "completed", "cache_hit": "true"},
-        )
-        return cached_response
-
-    lock_acquired = await redis_client.set(cache_hash, lock_token, ex=1200, nx=True)
-    if not lock_acquired:
-        logger.info(f"[{job_id}] DEDUPLICATION ACTIVE. Waiting...")
-        await redis_client.hset(
-            f"job_status:{job_id}",
-            mapping={"status": "waiting_in_queue"},
-        )
-        for _ in range(240):
-            await asyncio.sleep(5)
-            new_state = await redis_client.get(cache_hash)
-            cached_response = decode_cached_response(new_state)
-            if cached_response:
-                return cached_response
-        raise TimeoutError("Deduplication timeout.")
-
-    try:
-        if mode == "i2v":
-            workflow = json.loads(json.dumps(BASE_WORKFLOW))
-            workflow[NODE_MAP["image"]]["inputs"]["image"] = image_url
-        else:
-            workflow = json.loads(json.dumps(T2V_BASE_WORKFLOW))
-        workflow[NODE_MAP["prompt"]]["inputs"]["value"] = enhanced_prompt
-        workflow[NODE_MAP["seed1"]]["inputs"]["noise_seed"] = random.randint(1, 10**15)
-        workflow[NODE_MAP["seed2"]]["inputs"]["noise_seed"] = random.randint(1, 10**15)
-
-        http_timeout = aiohttp.ClientTimeout(total=1000)
-        async with aiohttp.ClientSession(timeout=http_timeout) as session:
-            target_node, history_entry = await execute_workflow_with_failover(
-                session, workflow, job_id, is_vip, start_time
-            )
-
-        video_filename = extract_custom_video_filename(history_entry)
-        if not video_filename:
-            raise RuntimeError("Workflow completed without a video output.")
-
-        await redis_client.hset(f"job_status:{job_id}", mapping={"status": "uploading"})
-        output_video_path = os.path.join(COMFY_OUTPUT_DIR, video_filename)
-        result_payload = await build_result_payload(output_video_path, job_id)
-        response = {
-            "status": "success",
-            **result_payload,
-            "metadata": {
-                "render_time_sec": round(time.time() - start_time, 2),
-                "node_used": target_node,
-            },
-        }
-
-        current_lock = await redis_client.get(cache_hash)
-        if current_lock == lock_token:
-            await redis_client.set(cache_hash, json.dumps(response), ex=CACHE_TTL_SECONDS)
-
-        return response
-    finally:
-        try:
-            if await redis_client.get(cache_hash) == lock_token:
-                await redis_client.delete(cache_hash)
-        except Exception:
-            pass
+    await wait_for_comfy_ready(session)
+    prompt_id = await comfy_client.queue_prompt(session, COMFY_HOST, workflow)
+    return await comfy_client.poll_history(session, COMFY_HOST, prompt_id, start_time)
 
 
 async def handle_workflow_job(job_id: str, job_input: dict, start_time: float) -> dict:
@@ -475,35 +266,34 @@ async def handle_workflow_job(job_id: str, job_input: dict, start_time: float) -
         raise ValueError("Missing 'workflow'.")
 
     images = job_input.get("images")
-    priority = job_input.get("priority", "standard")
-    is_vip = priority == "vip"
-
     cache_hash = build_workflow_cache_key(workflow, images)
     lock_token = str(uuid.uuid4())
 
-    redis_state = await redis_client.get(cache_hash)
+    redis_state = await redis_safe(redis_client.get(cache_hash))
     cached_response = decode_cached_response(redis_state)
     if cached_response:
-        await redis_client.hset(
-            f"job_status:{job_id}",
-            mapping={"status": "completed", "cache_hit": "true"},
+        await redis_safe(
+            redis_client.hset(
+                f"job_status:{job_id}",
+                mapping={"status": "completed", "cache_hit": "true"},
+            )
         )
         return cached_response
 
-    lock_acquired = await redis_client.set(cache_hash, lock_token, ex=1200, nx=True)
-    if not lock_acquired:
-        logger.info(f"[{job_id}] DEDUPLICATION ACTIVE. Waiting...")
-        await redis_client.hset(
-            f"job_status:{job_id}",
-            mapping={"status": "waiting_in_queue"},
+    lock_acquired = await redis_safe(redis_client.set(cache_hash, lock_token, ex=1200, nx=True))
+    if lock_acquired is False:
+        logger.info(f"[{job_id}] Deduplication active; waiting up to 60s.")
+        await redis_safe(
+            redis_client.hset(f"job_status:{job_id}", mapping={"status": "waiting_in_queue"})
         )
-        for _ in range(240):
+        deadline = time.time() + 60
+        while time.time() < deadline:
             await asyncio.sleep(5)
-            new_state = await redis_client.get(cache_hash)
+            new_state = await redis_safe(redis_client.get(cache_hash))
             cached_response = decode_cached_response(new_state)
             if cached_response:
                 return cached_response
-        raise TimeoutError("Deduplication timeout.")
+        logger.info(f"[{job_id}] Deduplication wait expired; rendering anyway.")
 
     written_input_files: list[str] = []
     try:
@@ -513,63 +303,106 @@ async def handle_workflow_job(job_id: str, job_input: dict, start_time: float) -
 
         http_timeout = aiohttp.ClientTimeout(total=1000)
         async with aiohttp.ClientSession(timeout=http_timeout) as session:
-            target_node, history_entry = await execute_workflow_with_failover(
-                session,
-                prepared_workflow,
-                job_id,
-                is_vip,
-                start_time,
-            )
+            history_entry = await execute_workflow(session, prepared_workflow, job_id, start_time)
 
-        await redis_client.hset(f"job_status:{job_id}", mapping={"status": "uploading"})
+        await redis_safe(redis_client.hset(f"job_status:{job_id}", mapping={"status": "uploading"}))
         output_payload = await build_workflow_output_payload(history_entry, job_id)
-        response = {
-            "status": "success",
-            "output": output_payload,
-            "metadata": {
-                "render_time_sec": round(time.time() - start_time, 2),
-                "node_used": target_node,
-            },
-        }
+        response = success_envelope(output_payload, start_time)
 
-        current_lock = await redis_client.get(cache_hash)
+        current_lock = await redis_safe(redis_client.get(cache_hash))
         if current_lock == lock_token:
-            await redis_client.set(cache_hash, json.dumps(response), ex=CACHE_TTL_SECONDS)
+            await redis_safe(
+                redis_client.set(cache_hash, json.dumps(response), ex=CACHE_TTL_SECONDS)
+            )
 
         return response
     finally:
         cleanup_input_files(written_input_files)
-        try:
-            if await redis_client.get(cache_hash) == lock_token:
-                await redis_client.delete(cache_hash)
-        except Exception:
-            pass
+        await redis_safe(_release_lock(cache_hash, lock_token))
 
-# --- 5. THE MASTER HANDLER ---
+
+async def handle_flat_job(job_id: str, job_input: dict, start_time: float) -> dict:
+    prompt = job_input.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("Prompt is required.")
+
+    image = job_input.get("image")
+    inferred_mode = "i2v" if image else "t2v"
+    requested_mode = job_input.get("mode")
+    if requested_mode is not None and requested_mode != inferred_mode:
+        raise ValueError(
+            f"mode={requested_mode!r} conflicts with image presence "
+            f"(image {'present' if image else 'absent'} implies mode={inferred_mode!r})."
+        )
+    mode = inferred_mode
+
+    image_name = job_input.get("image_name") or DEFAULT_IMAGE_NAME
+    duration = job_input.get("duration", 5)
+    aspect_ratio = job_input.get("aspect_ratio", "16:9")
+    optimize_prompt = job_input.get("optimize_prompt", True)
+    seed = job_input.get("seed")
+
+    written_input_files: list[str] = []
+    http_timeout = aiohttp.ClientTimeout(total=1000)
+    try:
+        # The session is opened before the image is materialized so that a remote
+        # image URL has a client to download with.
+        async with aiohttp.ClientSession(timeout=http_timeout) as session:
+            image_ref = None
+            if mode == "i2v":
+                image_ref, written_path = await materialize_image(
+                    COMFY_INPUT_DIR, job_id, image, image_name, session=session
+                )
+                written_input_files.append(written_path)
+
+            graph = build_graph(
+                mode=mode,
+                prompt=prompt,
+                seconds=duration,
+                aspect_ratio=aspect_ratio,
+                image_name=image_ref,
+                optimize_prompt=optimize_prompt,
+                seed=seed,
+            )
+
+            history_entry = await execute_workflow(session, graph, job_id, start_time)
+
+        output_payload = await build_workflow_output_payload(history_entry, job_id)
+        return success_envelope(output_payload, start_time)
+    finally:
+        cleanup_input_files(written_input_files)
+
+
 async def handler(job: dict) -> dict:
-    job_id = job.get('id', uuid.uuid4().hex)
-    job_input = job.get('input', {})
-    start_time = time.time()
+    job_input = job.get("input", {}) or {}
 
     if job_input.get("health_check") is True:
         return {"status": "healthy", "service": "ltx-2.5-worker"}
-    
-    # TELEMETRY: Announce Job Start
-    await redis_client.hset(f"job_status:{job_id}", mapping={"status": "initializing", "progress": "0%"})
-    await redis_client.expire(f"job_status:{job_id}", 3600)
+
+    job_id = job.get("id", uuid.uuid4().hex)
+    start_time = time.time()
+
+    await redis_safe(
+        redis_client.hset(
+            f"job_status:{job_id}", mapping={"status": "initializing", "progress": "0%"}
+        )
+    )
+    await redis_safe(redis_client.expire(f"job_status:{job_id}", 3600))
 
     try:
         if is_workflow_job(job_input):
             response = await handle_workflow_job(job_id, job_input, start_time)
         else:
-            response = await handle_custom_job(job_id, job_input, start_time)
+            response = await handle_flat_job(job_id, job_input, start_time)
+    except Exception as exc:
+        await redis_safe(
+            redis_client.hset(f"job_status:{job_id}", mapping={"status": "failed", "error": str(exc)})
+        )
+        raise
 
-        await redis_client.hset(f"job_status:{job_id}", mapping={"status": "completed"})
-        return response
+    await redis_safe(redis_client.hset(f"job_status:{job_id}", mapping={"status": "completed"}))
+    return response
 
-    except Exception as e:
-        await redis_client.hset(f"job_status:{job_id}", mapping={"status": "failed", "error": str(e)})
-        return {"status": "error", "error": str(e)}
 
-logger.info("Initializing Indro Serverless Engine V5 (GOD-TIER)...")
+logger.info("Initializing LTX 2.5 serverless worker...")
 runpod.serverless.start({"handler": handler})

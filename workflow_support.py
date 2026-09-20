@@ -4,16 +4,25 @@ import base64
 import binascii
 import copy
 import hashlib
+import ipaddress
 import json
 import mimetypes
+import os
+import socket
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+import ltx_graph
 
 OUTPUT_KEYS = {
     "images": "image",
     "videos": "video",
     "gifs": "video",
 }
+
+ALLOW_REMOTE_IMAGE_ENV = "LTX_ALLOW_REMOTE_IMAGE"
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
 
 
 def is_workflow_job(job_input: dict[str, Any]) -> bool:
@@ -131,3 +140,75 @@ def guess_media_type(filename: str, media_kind: str) -> str:
     if guessed:
         return guessed
     return "image/png" if media_kind == "image" else "video/mp4"
+
+
+def _reject_unsafe_host(hostname: str) -> None:
+    try:
+        resolved = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"Could not resolve image host: {hostname}") from exc
+
+    for _family, _type, _proto, _canonname, sockaddr in resolved:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise ValueError(f"Refusing to fetch image from unsafe host: {hostname}")
+
+
+async def _fetch_remote_image(url: str, session: Any) -> bytes:
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Only http:// and https:// image URLs are supported.")
+    if not parsed.hostname:
+        raise ValueError("Image URL is missing a hostname.")
+
+    _reject_unsafe_host(parsed.hostname)
+
+    if session is None:
+        raise ValueError("An HTTP session is required to download a remote image.")
+
+    async with session.get(url, allow_redirects=False) as response:
+        if not (200 <= response.status < 300):
+            raise ValueError(f"Failed to download remote image: HTTP {response.status}")
+
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.content.iter_chunked(65536):
+            total += len(chunk)
+            if total > MAX_IMAGE_BYTES:
+                raise ValueError("Remote image exceeds the maximum allowed size.")
+            chunks.append(chunk)
+
+        return b"".join(chunks)
+
+
+async def materialize_image(
+    base_dir: str,
+    job_id: str,
+    image: str,
+    image_name: str,
+    session: Any = None,
+) -> tuple[str, str]:
+    safe = ltx_graph.sanitize_image_name(image_name or ltx_graph.DEFAULT_IMAGE_NAME)
+    scoped = f"{job_id}/{safe}"
+    target = safe_input_path(base_dir, scoped)
+
+    if image.startswith("http://") or image.startswith("https://"):
+        if os.environ.get(ALLOW_REMOTE_IMAGE_ENV) != "true":
+            raise ValueError(
+                f"Remote image URLs are disabled; set {ALLOW_REMOTE_IMAGE_ENV}=true to allow."
+            )
+        data = await _fetch_remote_image(image, session)
+    else:
+        data = decode_base64_data(image)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+
+    return scoped, str(target)

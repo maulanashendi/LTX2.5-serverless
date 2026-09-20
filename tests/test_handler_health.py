@@ -133,28 +133,6 @@ sleep() { attempt=1; }
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Redis ready at redis://127.0.0.1:6379", result.stdout)
 
-    def test_rate_limiting_keeps_api_key_out_of_redis(self):
-        module, _ = self.load_handler()
-        module.API_KEY_SECRET = "test-private-api-key"
-        module.redis_client = AsyncMock()
-        module.redis_client.incr.return_value = 1
-        with self.assertRaises(PermissionError):
-            asyncio.run(module.handle_custom_job("job", {"api_key": "wrong"}, 0))
-        module.redis_client.incr.assert_not_called()
-        with self.assertRaisesRegex(ValueError, "Missing"):
-            asyncio.run(module.handle_custom_job(
-                "job", {"api_key": module.API_KEY_SECRET}, 0
-            ))
-        key = module.redis_client.incr.call_args.args[0]
-        self.assertNotIn(module.API_KEY_SECRET, key)
-        module.redis_client.expire.assert_awaited_once_with(key, 60)
-        module.redis_client.incr.return_value = 11
-        with self.assertRaisesRegex(PermissionError, "429"):
-            asyncio.run(module.handle_custom_job(
-                "job", {"api_key": module.API_KEY_SECRET}, 0
-            ))
-        module.redis_client.incr.assert_awaited_with(key)
-
 
 if __name__ == "__main__":
     unittest.main()

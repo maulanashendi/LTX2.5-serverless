@@ -37,7 +37,7 @@ Create a Serverless template in the RunPod console and set:
 ```env
 PERSIST_WORKSPACE=true
 RUN_MODE=worker
-COMFY_NODES=127.0.0.1:8188
+COMFY_HOST=127.0.0.1:8188
 LTX25_PRELOAD_VARIANT=distilled-int8
 LTX25_PRELOAD_PROMPT_ENHANCER=true
 HUGGINGFACE_ACCESS_TOKEN=hf_xxx
@@ -90,7 +90,7 @@ The local Redis restriction is included in source commit `ed6617d`. A Git push a
 3. Update the deployment to the new image and replace the existing workers or containers. Merely restarting an old image will keep the old behavior.
 4. For `worker` or `local-api`, confirm that startup reports Redis ready or already available at `redis://127.0.0.1:6379`, then complete the generation smoke test above. Pod mode reports that it skips Redis.
 
-Old Redis data is not migrated or deleted. If an earlier deployment used external Redis, remove its cached results separately. If you used the legacy `input.api_key` route, rotate `INDRO_API_KEY` and update its callers: older versions included that secret in Redis counter names. The new worker uses a counter name without key material.
+Old Redis data is not migrated or deleted. If an earlier deployment used external Redis, remove its cached results separately. The legacy `input.api_key` / `input.image_url` route has been removed — RunPod already authenticates at the endpoint, so `INDRO_API_KEY` is no longer read. Callers of that route should move to the flat input path documented in the README. Rotate any `INDRO_API_KEY` you previously set, since older versions embedded it in Redis counter names.
 
 Expect an empty result cache after replacement. Models and download/compiler caches remain on the attached volume. This update restricts Redis connections; it does not add authentication to the frontend or change S3 uploads.
 
