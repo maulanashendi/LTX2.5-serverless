@@ -2,6 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
+import ltx_graph
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
@@ -12,6 +13,19 @@ WORKFLOW_PATHS = {
 
 # Nodes that exist only in the i2v workflow's image-conditioning branch.
 I2V_ONLY_NODES = {"395", "398:363", "398:357", "398:349", "398:350", "398:351"}
+
+# Every node constant build_graph() writes into, per ltx_graph.py.
+GRAPH_NODE_CONSTANTS = {
+    "PROMPT_NODE": ltx_graph.PROMPT_NODE,
+    "DURATION_NODE": ltx_graph.DURATION_NODE,
+    "WIDTH_NODE": ltx_graph.WIDTH_NODE,
+    "HEIGHT_NODE": ltx_graph.HEIGHT_NODE,
+    "FPS_NODE": ltx_graph.FPS_NODE,
+    "PROMPT_OPTIMIZER_NODE": ltx_graph.PROMPT_OPTIMIZER_NODE,
+    "PROMPT_OPTIMIZER_TOGGLE_NODE": ltx_graph.PROMPT_OPTIMIZER_TOGGLE_NODE,
+    "SEED_NODE_1": ltx_graph.SEED_NODE_1,
+    "SEED_NODE_2": ltx_graph.SEED_NODE_2,
+}
 
 
 class Ltx25WorkflowTestMixin:
@@ -114,6 +128,16 @@ class TestLtx25WorkflowParity(unittest.TestCase):
             != self.t2v_workflow[node_id]["class_type"]
         ]
         self.assertEqual(mismatched, [])
+
+    def test_build_graph_node_constants_exist_in_both_templates(self) -> None:
+        for name, node_id in GRAPH_NODE_CONSTANTS.items():
+            with self.subTest(constant=name, node_id=node_id):
+                self.assertIn(node_id, self.i2v_workflow)
+                self.assertIn(node_id, self.t2v_workflow)
+
+    def test_image_node_only_in_i2v_template(self) -> None:
+        self.assertIn(ltx_graph.IMAGE_NODE, self.i2v_workflow)
+        self.assertNotIn(ltx_graph.IMAGE_NODE, self.t2v_workflow)
 
 
 if __name__ == "__main__":
