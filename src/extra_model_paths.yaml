@@ -1,3 +1,6 @@
+# Kept in sync with write_extra_model_paths() in src/bootstrap_workspace.sh.
+# That function regenerates this file at boot, but it returns early when
+# PERSIST_WORKSPACE=false — in which case this baked-in copy is what ComfyUI reads.
 runpod_worker_comfy:
   base_path: /runpod-volume
   checkpoints: models/checkpoints/
@@ -6,7 +9,10 @@ runpod_worker_comfy:
   configs: models/configs/
   controlnet: models/controlnet/
   embeddings: models/embeddings/
+  latent_upscale_models: models/latent_upscale_models/
   loras: models/loras/
+  text_encoders: models/text_encoders/
+  diffusion_models: models/diffusion_models/
   upscale_models: models/upscale_models/
   vae: models/vae/
   unet: models/unet/

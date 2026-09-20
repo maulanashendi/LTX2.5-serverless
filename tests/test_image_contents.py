@@ -78,3 +78,36 @@ class TestImageContents(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestModelPaths(unittest.TestCase):
+    """The LTX workflow loads from diffusion_models, text_encoders and
+    latent_upscale_models. bootstrap_workspace.sh regenerates
+    extra_model_paths.yaml at boot, but returns early when PERSIST_WORKSPACE is
+    not "true" — so the baked-in file must already list the same keys."""
+
+    REQUIRED = ("diffusion_models", "text_encoders", "latent_upscale_models")
+
+    def _static_keys(self) -> set[str]:
+        text = (ROOT / "src" / "extra_model_paths.yaml").read_text()
+        return set(re.findall(r"^\s{2}(\w+):", text, re.MULTILINE))
+
+    def _generated_keys(self) -> set[str]:
+        text = (ROOT / "src" / "bootstrap_workspace.sh").read_text()
+        body = text.split("write_extra_model_paths()", 1)[1]
+        body = body.split("EOF", 2)[1]
+        return set(re.findall(r"^\s{2}(\w+):", body, re.MULTILINE))
+
+    def test_static_file_lists_the_loaders_the_workflow_needs(self):
+        keys = self._static_keys()
+        for required in self.REQUIRED:
+            self.assertIn(required, keys)
+
+    def test_static_and_generated_paths_agree(self):
+        self.assertEqual(
+            self._static_keys(),
+            self._generated_keys(),
+            "src/extra_model_paths.yaml drifted from write_extra_model_paths() in "
+            "src/bootstrap_workspace.sh; ComfyUI would resolve different model "
+            "directories depending on PERSIST_WORKSPACE.",
+        )
