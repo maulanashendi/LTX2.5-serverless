@@ -1,5 +1,19 @@
 # [5.3.0](https://github.com/runpod-workers/worker-comfyui/compare/5.2.0...5.3.0) (2025-07-22)
 
+## 6.0.0
+
+### Major Changes
+
+- 3c3b21e: Upgrade the worker to LTX 2.5 on a Blackwell-first CUDA 13 ComfyUI stack.
+
+### Minor Changes
+
+- 8adf4d0: Add text-to-video support alongside image-to-video: a bundled `video_ltx2_5_t2v_API.json` handler workflow and matching ComfyUI editor workflow, seeded and verified the same way as the existing i2v stack. No new model downloads required.
+
+### Patch Changes
+
+- 35b5502: Rewrite the serverless handler to a strict RunPod handler contract: exceptions now propagate instead of being swallowed into `{"status": "error"}`, ComfyUI readiness is checked via `/system_stats` before a job renders (fixing cold-start failures), and a new flat input path (`{"prompt", "image"?}`) picks text-to-video or image-to-video automatically from whether an image is supplied. The raw `workflow` input path is unchanged. Removed the legacy fleet failover, circuit breaker, VIP rate limiter, and API-key check; Redis stays for local caching/dedup but every call is now best-effort and the dedup wait is capped at 60 seconds instead of blocking for 20 minutes.
+
 ## 5.8.5
 
 ### Patch Changes
