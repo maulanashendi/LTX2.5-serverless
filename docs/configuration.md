@@ -84,6 +84,9 @@ The handler and bundled frontend execute `/video_ltx2_5_i2v_API.json` and `/vide
 | `CACHE_TTL_SECONDS` | Successful response cache lifetime in seconds. | `604800` |
 | `MAX_INLINE_VIDEO_MB` | Maximum inline video response size before S3 becomes mandatory. | `50` |
 | `LTX_ALLOW_REMOTE_IMAGE` | Set to `true` to let the flat input path download an `image` given as an `http(s)` URL. Data URLs and raw base64 always work. | unset |
+| `LTX25_REPO_URL` | Base URL that LTX 2.5 preload downloads are resolved against (e.g. a mirror in Cloudflare R2). The `diffusion_models/`, `text_encoders/`, `vae/`, and `latent_upscale_models/` relative layout is unchanged. | `https://huggingface.co/Lightricks/LTX-2.5/resolve/main` |
+| `LTX25_ENHANCER_URL` | Full URL for the prompt enhancer weights, overriding the default Hugging Face source. | `https://huggingface.co/Comfy-Org/gemma-4/resolve/main/text_encoders/gemma4_e2b_it_bf16.safetensors` |
+| `LTX25_DOWNLOAD_CONCURRENCY` | Maximum number of LTX 2.5 preload files downloaded in parallel. | `4` |
 
 ## Redis and cached results
 

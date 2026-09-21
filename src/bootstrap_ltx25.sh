@@ -75,7 +75,7 @@ ltx_download() {
 
     case "${backend}" in
         auto)
-            if python -c "import huggingface_hub" >/dev/null 2>&1; then
+            if [[ "${url}" == https://huggingface.co/* ]] && python -c "import huggingface_hub" >/dev/null 2>&1; then
                 ltx_download_with_hf_hub "${url}" "${output_path}" "${token}"
             else
                 ltx_download_with_wget "${url}" "${output_path}" "${token}"
@@ -92,6 +92,44 @@ ltx_download() {
             exit 1
             ;;
     esac
+}
+
+ltx_download_batch() {
+    local token="$1"
+    shift
+    local concurrency="${LTX25_DOWNLOAD_CONCURRENCY:-4}"
+    local -a pids=()
+    local -a labels=()
+    local -a failed_files=()
+    local entry url output_path idx
+
+    for entry in "$@"; do
+        url="${entry%%|*}"
+        output_path="${entry#*|}"
+
+        ltx_download "${url}" "${output_path}" "${token}" &
+        pids+=("$!")
+        labels+=("${output_path}")
+
+        if [ "${#pids[@]}" -ge "${concurrency}" ]; then
+            for idx in "${!pids[@]}"; do
+                wait "${pids[${idx}]}" || failed_files+=("${labels[${idx}]}")
+            done
+            pids=()
+            labels=()
+        fi
+    done
+
+    if [ "${#pids[@]}" -gt 0 ]; then
+        for idx in "${!pids[@]}"; do
+            wait "${pids[${idx}]}" || failed_files+=("${labels[${idx}]}")
+        done
+    fi
+
+    if [ "${#failed_files[@]}" -gt 0 ]; then
+        ltx_log "Failed to download: ${failed_files[*]}"
+        exit 1
+    fi
 }
 
 ltx_transformer_filename() {
@@ -121,7 +159,7 @@ bootstrap_ltx25() {
     [ -n "${variant}" ] || return
 
     local model_root="${COMFY_MODEL_ROOT:-/comfyui/models}"
-    local repo_url="https://huggingface.co/Lightricks/LTX-2.5/resolve/main"
+    local repo_url="${LTX25_REPO_URL:-https://huggingface.co/Lightricks/LTX-2.5/resolve/main}"
     local token transformer text_encoder
     token="$(ltx_hf_token)"
     transformer="$(ltx_transformer_filename "${variant}")" || {
@@ -130,25 +168,21 @@ bootstrap_ltx25() {
     }
     text_encoder="$(ltx_text_encoder_filename "${variant}")"
 
-    ltx_download "${repo_url}/diffusion_models/${transformer}" \
-        "${model_root}/diffusion_models/${transformer}" "${token}"
-    ltx_download "${repo_url}/text_encoders/${text_encoder}" \
-        "${model_root}/text_encoders/${text_encoder}" "${token}"
-
-    local relative_path
-    for relative_path in \
-        "vae/ltx-2.5-video-vae-bf16.safetensors" \
-        "vae/ltx-2.5-audio-vae-bf16.safetensors" \
-        "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"; do
-        ltx_download "${repo_url}/${relative_path}" "${model_root}/${relative_path}" "${token}"
-    done
+    local -a downloads=(
+        "${repo_url}/diffusion_models/${transformer}|${model_root}/diffusion_models/${transformer}"
+        "${repo_url}/text_encoders/${text_encoder}|${model_root}/text_encoders/${text_encoder}"
+        "${repo_url}/vae/ltx-2.5-video-vae-bf16.safetensors|${model_root}/vae/ltx-2.5-video-vae-bf16.safetensors"
+        "${repo_url}/vae/ltx-2.5-audio-vae-bf16.safetensors|${model_root}/vae/ltx-2.5-audio-vae-bf16.safetensors"
+        "${repo_url}/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors|${model_root}/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+    )
 
     if [ "${LTX25_PRELOAD_PROMPT_ENHANCER:-true}" = "true" ]; then
         local prompt_enhancer="gemma4_e2b_it_bf16.safetensors"
-        ltx_download \
-            "https://huggingface.co/Comfy-Org/gemma-4/resolve/main/text_encoders/${prompt_enhancer}" \
-            "${model_root}/text_encoders/${prompt_enhancer}" "${token}"
+        local enhancer_url="${LTX25_ENHANCER_URL:-https://huggingface.co/Comfy-Org/gemma-4/resolve/main/text_encoders/${prompt_enhancer}}"
+        downloads+=("${enhancer_url}|${model_root}/text_encoders/${prompt_enhancer}")
     fi
+
+    ltx_download_batch "${token}" "${downloads[@]}"
 
     ltx_log "LTX 2.5 ${variant} model stack is ready"
 }

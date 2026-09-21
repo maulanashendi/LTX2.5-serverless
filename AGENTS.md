@@ -9,6 +9,12 @@
 - **Platform mismatch**: Always build with `--platform linux/amd64` for Runpod deployment. Omitting this on ARM hosts (Apple Silicon) produces images that silently fail on Runpod.
 - **No linter or formatter configured**: Follow PEP 8 by convention; there are no pre-commit hooks or CI lint checks.
 - **ComfyUI-Manager forced offline**: `start.sh` calls `comfy-manager-set-mode offline` on every boot. Custom nodes cannot be installed at runtime through the Manager UI — they must be baked into the Docker image.
+- **`PERSIST_WORKSPACE=false` breaks model discovery**: it looks like the right setting
+  when no network volume is attached, but `bootstrap_workspace` returns *before*
+  `write_extra_model_paths`, leaving the file baked into the image — which points at
+  `/runpod-volume`. Keep it `true` with no volume too: `detect_persistent_root` then
+  returns empty and the "no persistent mount detected" branch regenerates the file
+  against `/comfyui`, which is where `bootstrap_ltx25.sh` puts the weights.
 - **Network volume mount point**: Models on a network volume must match the directory structure in `src/extra_model_paths.yaml`. The volume is expected at `/runpod-volume` with a `comfyui/models/` subtree.
 
 ## Model type detection (for workflow parsing)

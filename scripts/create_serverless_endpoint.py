@@ -3,9 +3,13 @@
 
 Creates billable resources. See docs/serverless-deploy-runbook.md.
 
-Required env: IMAGE, NETWORK_VOLUME_ID, DATACENTER, HUGGINGFACE_ACCESS_TOKEN
-Optional env: NAME, GPU_TYPE_IDS (JSON list), CONTAINER_DISK_GB, WORKERS_MAX,
-              EXECUTION_TIMEOUT_MS, RUNPOD_API_KEY
+Required env: IMAGE, LTX25_REPO_URL
+Optional env: NAME, GPU_TYPE_IDS (JSON list), DATACENTERS (JSON list),
+              CONTAINER_DISK_GB, WORKERS_MAX, EXECUTION_TIMEOUT_MS, RUNPOD_API_KEY
+
+Model weights are pulled from LTX25_REPO_URL (an R2 mirror) onto container disk
+at cold start. There is no network volume, so the endpoint is not pinned to one
+data center.
 """
 from __future__ import annotations
 
@@ -56,11 +60,10 @@ def post(path: str, payload: dict, key: str) -> dict:
 def main() -> None:
     key = api_key()
     image = required("IMAGE")
-    volume_id = required("NETWORK_VOLUME_ID")
-    datacenter = required("DATACENTER")
-    hf_token = required("HUGGINGFACE_ACCESS_TOKEN")
+    repo_url = required("LTX25_REPO_URL")
 
     name = os.environ.get("NAME", "ltx25-worker")
+    datacenters = json.loads(os.environ.get("DATACENTERS", "[]"))
     gpu_type_ids = json.loads(
         os.environ.get("GPU_TYPE_IDS", '["NVIDIA A40", "NVIDIA RTX A6000"]')
     )
@@ -72,18 +75,25 @@ def main() -> None:
             "name": f"{name}-tpl",
             "imageName": image,
             "isServerless": True,
-            # Code image only — the weights live on the network volume.
-            "containerDiskInGb": int(os.environ.get("CONTAINER_DISK_GB", "30")),
+            # Holds the image plus the ~50GB of weights pulled at cold start.
+            "containerDiskInGb": int(os.environ.get("CONTAINER_DISK_GB", "120")),
             "env": {
                 "RUN_MODE": "worker",
+                # Keep this "true" even with no volume attached. bootstrap_workspace
+                # then takes its "no persistent mount detected" branch, which still
+                # regenerates extra_model_paths.yaml against /comfyui. Setting it
+                # "false" returns before that write and leaves the baked-in file
+                # pointing at a /runpod-volume that does not exist.
                 "PERSIST_WORKSPACE": "true",
                 "LTX25_PRELOAD_VARIANT": "distilled-int8",
                 "LTX25_PRELOAD_PROMPT_ENHANCER": "true",
+                # Weights come from the R2 mirror, not HuggingFace, so a cold start
+                # does not depend on HF being up or under its rate limit.
+                "LTX25_REPO_URL": repo_url,
                 "LTX_FRONTEND_ENABLED": "false",
                 "COMFY_HOST": "127.0.0.1:8188",
                 # First boot pulls ~50GB before ComfyUI answers.
                 "COMFY_READY_TIMEOUT": "900",
-                "HUGGINGFACE_ACCESS_TOKEN": hf_token,
             },
         },
         key,
@@ -99,8 +109,9 @@ def main() -> None:
             "templateId": template_id,
             "gpuTypeIds": gpu_type_ids,
             "gpuCount": 1,
-            "dataCenterIds": [datacenter],
-            "networkVolumeId": volume_id,
+            # No network volume, so the endpoint may span data centers. An empty
+            # list lets Runpod place workers wherever the GPUs are available.
+            **({"dataCenterIds": datacenters} if datacenters else {}),
             "workersMin": 0,
             "workersMax": int(os.environ.get("WORKERS_MAX", "1")),
             "idleTimeout": 5,
@@ -122,8 +133,9 @@ def main() -> None:
         f"  curl -sS -X POST https://api.runpod.ai/v2/{endpoint_id}/runsync \\\n"
         '    -H "Authorization: Bearer $RUNPOD_API_KEY" -H "Content-Type: application/json" \\\n'
         "    -d '{\"input\":{\"health_check\":true}}'\n\n"
-        "The first render downloads ~50GB onto the volume. Submit it with /run and\n"
-        "poll /status rather than blocking on /runsync — runbook step 4."
+        "Every cold start pulls ~50GB from the mirror onto container disk, so\n"
+        "submit the first render with /run and poll /status rather than blocking\n"
+        "on /runsync — runbook step 4."
     )
 
 
